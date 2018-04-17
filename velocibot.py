@@ -1,13 +1,15 @@
 #!python3
 
+import asyncio
 import datetime
 import discord
 import json
 from sqlalchemy import Column, DateTime, Interval, Boolean, String
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
 from sqlalchemy.orm.exc import NoResultFound
+import sys
 
 Base = declarative_base()
 
@@ -30,6 +32,43 @@ def update_total_time(member):
     member.last_join = now
 
 client = discord.Client()
+
+def update_active_users():
+    """Updates total_time for all active users"""
+    s = session()
+    for channel in client.get_all_channels():
+        for member in channel.voice_members:
+            if not member.voice.is_afk:
+                try:
+                    db_member = s.query(Member).filter(
+                        Member.id == member.id
+                    ).one()
+                    db_member.in_chat = True
+                    update_total_time(db_member)
+                except NoResultFound:
+                    db_member = Member(
+                        id=member.id,
+                        name=member.nick if member.nick else member.name,
+                        last_join=datetime.datetime.now(),
+                        total_time=datetime.timedelta(0),
+                        in_chat=True
+                    )
+                    s.add(db_member)
+    s.commit()
+
+async def active_user_update_loop():
+    await client.wait_until_ready()
+    s = session()
+    members = s.query(Member).all()
+    now = datetime.datetime.now()
+    for member in members:
+        member.in_chat = False
+        member.last_join = now
+    s.commit()
+    while not client.is_closed:
+        update_active_users()
+        await asyncio.sleep(60)
+
 @client.event
 async def on_voice_state_update(before, after):
     s = session()
@@ -66,6 +105,7 @@ async def on_voice_state_update(before, after):
     if add_member:
         s.add(member)
     s.commit()
+    sys.stdout.flush()
 
 @client.event
 async def on_message(message):
@@ -123,31 +163,10 @@ async def on_ready():
     print(client.user.name)
     print(client.user.id)
     print('------')
-    s = session()
-    members = s.query(Member).all()
-    for member in members:
-        member.in_chat = False
-    for channel in client.get_all_channels():
-        for member in channel.voice_members:
-            if not member.voice.is_afk:
-                try:
-                    db_member = s.query(Member).filter(
-                        Member.id == member.id
-                    ).one()
-                    db_member.in_chat = True
-                    db_member.last_join = datetime.datetime.now()
-                except NoResultFound:
-                    db_member = Member(
-                        id=member.id,
-                        name=member.nick if member.nick else member.name,
-                        last_join=datetime.datetime.now(),
-                        total_time=datetime.timedelta(0),
-                        in_chat=True
-                    )
-                    s.add(db_member)
-    s.commit()
+    sys.stdout.flush()
 
 with open('token.json') as f:
     token = json.load(f)['token']
     
+client.loop.create_task(active_user_update_loop())
 client.run(token)
