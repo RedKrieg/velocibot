@@ -11,6 +11,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.orm.exc import NoResultFound
 import sys
 
+# Database setup
 Base = declarative_base()
 
 class Member(Base):
@@ -26,12 +27,15 @@ session = sessionmaker()
 session.configure(bind=engine)
 Base.metadata.create_all(engine)
 
+# Discord client
+client = discord.Client()
+
+# Helpers
 def update_total_time(member):
+    """Update total_time with time since last_join"""
     now = datetime.datetime.now()
     member.total_time += now - member.last_join
     member.last_join = now
-
-client = discord.Client()
 
 def update_active_users():
     """Updates total_time for all active users"""
@@ -56,8 +60,9 @@ def update_active_users():
                     s.add(db_member)
     s.commit()
 
+# Background events
 async def active_user_update_loop():
-    await client.wait_until_ready()
+    """Reset join times, wait for discord connection, then keep db synced"""
     s = session()
     members = s.query(Member).all()
     now = datetime.datetime.now()
@@ -65,12 +70,15 @@ async def active_user_update_loop():
         member.in_chat = False
         member.last_join = now
     s.commit()
+    await client.wait_until_ready()
     while not client.is_closed:
         update_active_users()
         await asyncio.sleep(60)
 
+# Discord events
 @client.event
 async def on_voice_state_update(before, after):
+    """Monitor status updates for voice channels"""
     s = session()
     add_member = False
     try:
@@ -109,6 +117,7 @@ async def on_voice_state_update(before, after):
 
 @client.event
 async def on_message(message):
+    """Handles incoming messages"""
     if message.author == client.user:
         return
 
@@ -156,17 +165,19 @@ async def on_message(message):
                 embed=embed
             )
 
-
 @client.event
 async def on_ready():
+    """Print out some status info on connect"""
     print('Logged in as')
     print(client.user.name)
     print(client.user.id)
     print('------')
     sys.stdout.flush()
 
+# Configuration
 with open('token.json') as f:
     token = json.load(f)['token']
     
+# Run it
 client.loop.create_task(active_user_update_loop())
 client.run(token)
