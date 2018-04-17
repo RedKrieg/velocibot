@@ -130,8 +130,21 @@ async def on_ready():
     for channel in client.get_all_channels():
         for member in channel.voice_members:
             if not member.voice.is_afk:
-                member.in_chat = True
-                member.last_join = datetime.datetime.now()
+			    try:
+                    db_member = s.query(Member).filter(
+                        Member.id == member.id
+                    ).one()
+                    db_member.in_chat = True
+                    db_member.last_join = datetime.datetime.now()
+                except NoResultFound:
+                    db_member = Member(
+                        id=member.id,
+                        name=member.nick if member.nick else member.name,
+                        last_join=datetime.datetime.now(),
+                        total_time=datetime.timedelta(0),
+                        in_chat=True
+                    )
+                    s.add(db_member)
     s.commit()
 
 with open('token.json') as f:
