@@ -130,7 +130,7 @@ async def on_ready():
     for channel in client.get_all_channels():
         for member in channel.voice_members:
             if not member.voice.is_afk:
-			    try:
+                try:
                     db_member = s.query(Member).filter(
                         Member.id == member.id
                     ).one()
