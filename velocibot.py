@@ -22,6 +22,12 @@ class Member(Base):
     total_time = Column(Interval)
     in_chat = Column(Boolean)
 
+    def update_total_time(self):
+        """Update total_time with time since last_join"""
+        now = datetime.datetime.now()
+        self.total_time += now - self.last_join
+        self.last_join = now
+
 engine = create_engine('sqlite:///member_tracker.sqlite')
 session = sessionmaker()
 session.configure(bind=engine)
@@ -31,12 +37,6 @@ Base.metadata.create_all(engine)
 client = discord.Client()
 
 # Helpers
-def update_total_time(member):
-    """Update total_time with time since last_join"""
-    now = datetime.datetime.now()
-    member.total_time += now - member.last_join
-    member.last_join = now
-
 def update_active_users():
     """Updates total_time for all active users"""
     s = session()
@@ -44,21 +44,36 @@ def update_active_users():
         for member in channel.voice_members:
             if not member.voice.is_afk:
                 try:
-                    db_member = s.query(Member).filter(
+                    dbmember = s.query(Member).filter(
                         Member.id == member.id
                     ).one()
-                    db_member.in_chat = True
-                    update_total_time(db_member)
+                    dbmember.in_chat = True
+                    dbmember.update_total_time()
                 except NoResultFound:
-                    db_member = Member(
+                    dbmember = Member(
                         id=member.id,
                         name=member.nick if member.nick else member.name,
                         last_join=datetime.datetime.now(),
                         total_time=datetime.timedelta(0),
                         in_chat=True
                     )
-                    s.add(db_member)
+                    s.add(dbmember)
     s.commit()
+
+def check_admin(message):
+    """Checks if the message is from an administrator"""
+    perms = message.channel.permissions_for(message.author)
+    is_admin = perms.administrator
+    try:
+        for role in message.author.roles:
+            if "Admins" in role.name or "Founder" in role.name:
+                is_admin = True
+                break
+    except AttributeError:
+        # Bypass for redkrieg to work in private messages
+        if str(message.author.id) == "135195179219943424":
+            is_admin = True
+    return is_admin
 
 # Background events
 async def active_user_update_loop():
@@ -80,38 +95,51 @@ async def active_user_update_loop():
 async def on_voice_state_update(before, after):
     """Monitor status updates for voice channels"""
     s = session()
-    add_member = False
+    # prefer nickname in server to actual discord username
+    member_name = before.nick if before.nick else before.name
     try:
         member = s.query(Member).filter(Member.id == before.id).one()
+        # update member names on each channel join
+        member.name = member_name
     except NoResultFound:
         member = Member(
             id=before.id,
-            name=before.nick if before.nick else before.name,
+            name=member_name,
             last_join=datetime.datetime.now(),
             total_time=datetime.timedelta(0),
             in_chat=False
         )
-        add_member = True
+        s.add(member)
     if after.voice.voice_channel is None:
         if member.in_chat:
             member.in_chat = False
-            update_total_time(member)
-        print("{} left voice.  Total time: {}".format(
-            member.name, member.total_time
+            member.update_total_time()
+        try:
+            channel_name = before.voice.voice_channel.name
+        except AttributeError:
+            channel_name = "Unknown"
+        print("{} left voice channel {}.  Total time: {}".format(
+            member.name,
+            channel_name,
+            member.total_time
         ))
     else:
         if member.in_chat:
             if after.voice.is_afk:
                 member.in_chat = False
-                update_total_time(member)
+                member.update_total_time()
         else:
             member.in_chat = True
             member.last_join = datetime.datetime.now()
-        print("{} joined voice.  Total time: {}".format(
-            member.name, member.total_time
+        try:
+            channel_name = after.voice.voice_channel.name
+        except AttributeError:
+            channel_name = "Private"
+        print("{} joined voice channel {}.  Total time: {}".format(
+            member.name,
+            channel_name,
+            member.total_time
         ))
-    if add_member:
-        s.add(member)
     s.commit()
     sys.stdout.flush()
 
@@ -121,48 +149,53 @@ async def on_message(message):
     if message.author == client.user:
         return
 
-    if message.channel.name != "admins":
+    if not check_admin(message):
         return
 
     if message.content.startswith('!velocistats'):
-        parts = message.content.split()
         s = session()
-        if len(parts) > 1 and parts[1].startswith('<@'):
-            user_id = parts[1].strip('<@>')
-            try:
-                member = s.query(Member).filter(Member.id == user_id).one()
-            except NoResultFound:
-                await client.send_message(message.channel, "User not found!")
-                return
-            if member.in_chat:
-                update_total_time(member)
-                s.commit()
-            await client.send_message(
-                message.channel,
-                "User {0.name} has a total chat time of {0.total_time}".format(
-                    member
+        if len(message.mentions) > 0:
+            for member in message.mentions:
+                try:
+                    dbmember = s.query(Member).filter(
+                        Member.id == member.id
+                    ).one()
+                except NoResultFound:
+                    await client.send_message(
+                        message.channel,
+                        "User {} not found!".format(
+                            member.nick if member.nick else member.name
+                        )
+                    )
+                    continue
+                if dbmember.in_chat:
+                    dbmember.update_total_time()
+                    s.commit()
+                await client.send_message(
+                    message.channel,
+                    "User {0.name} has a total chat time of {0.total_time}".format(
+                        dbmember
+                    )
                 )
-            )
         else:
             members = s.query(Member).order_by(
                 Member.total_time.desc()
             ).limit(10).all()
-            embed = discord.Embed(
-                title="Current Top Voice Users",
-                type="rich"
-            )
+            msg = [ """Current Top Voice Users\n\n```""" ]
             for member in members:
                 if member.in_chat:
-                    update_total_time(member)
-                embed.add_field(
-                    name=member.name,
-                    value=member.total_time,
-                    inline=True
+                    member.update_total_time()
+                msg.append(
+                    "{0: <40}{1: >25}\n".format(
+                        str(member.name),
+                        str(member.total_time)
+                    )
                 )
+            msg.append("""```""")
             s.commit()
             await client.send_message(
                 message.channel,
-                embed=embed
+                ''.join(msg)
             )
 
 @client.event
