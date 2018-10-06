@@ -1,0 +1,19 @@
+[Unit]
+Description=velocibot
+After=syslog.target network.target
+
+[Service]
+Type=simple
+User=redkrieg
+WorkingDirectory=/home/redkrieg/projects/velocibot
+ExecStart=/home/redkrieg/.virtualenvs/velocibot/bin/python /home/redkrieg/projects/velocibot/velocibot.py
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=3
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=velocibot
+KillSignal=SIGINT
+
+[Install]
+WantedBy=multi-user.target

@@ -75,6 +75,19 @@ def check_admin(message):
             is_admin = True
     return is_admin
 
+def format_timedelta(td):
+    """Formats timedelta without microseconds"""
+    # Modified from stdlib datetime.timedelta.__str__
+    mm, ss = divmod(td.seconds, 60)
+    hh, mm = divmod(mm, 60)
+    s = "%d:%02d:%02d" % (hh, mm, ss)
+    if td.days:
+        def plural(n):
+            return n, abs(n) != 1 and "s" or ""
+        s = ("%d day%s, " % plural(td.days)) + s
+    return s
+
+
 # Background events
 async def active_user_update_loop():
     """Reset join times, wait for discord connection, then keep db synced"""
@@ -125,7 +138,10 @@ async def on_voice_state_update(before, after):
         ))
     else:
         if member.in_chat:
-            if after.voice.is_afk:
+            # Don't consider deafened or afk users as active
+            if after.voice.is_afk or after.voice.self_deaf or after.voice.deaf:
+                # This logic breaks if the user is server deafened and
+                # self-deafens as well.  Need to think through.
                 member.in_chat = False
                 member.update_total_time()
         else:
@@ -173,10 +189,33 @@ async def on_message(message):
                     s.commit()
                 await client.send_message(
                     message.channel,
-                    "User {0.name} has a total chat time of {0.total_time}".format(
-                        dbmember
+                    "User {0} has a total chat time of {1}".format(
+                        dbmember.name,
+                        format_timedelta(dbmember.total_time)
                     )
                 )
+        elif message.content.startswith('!velocistats low'):
+            members = s.query(Member).order_by(
+                Member.total_time.asc()
+            ).filter(
+                Member.name.startswith('-=[ V ]=-')
+            ).limit(10).all()
+            msg = [ """Current Lowest Voice Users\n\n```""" ]
+            for member in members:
+                if member.in_chat:
+                    member.update_total_time()
+                msg.append(
+                    "{0: <40}{1: >25}\n".format(
+                        member.name,
+                        format_timedelta(member.total_time)
+                    )
+                )
+            msg.append("""```""")
+            s.commit()
+            await client.send_message(
+                message.channel,
+                ''.join(msg)
+            )
         else:
             members = s.query(Member).order_by(
                 Member.total_time.desc()
@@ -187,8 +226,8 @@ async def on_message(message):
                     member.update_total_time()
                 msg.append(
                     "{0: <40}{1: >25}\n".format(
-                        str(member.name),
-                        str(member.total_time)
+                        member.name,
+                        format_timedelta(member.total_time)
                     )
                 )
             msg.append("""```""")
